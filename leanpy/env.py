@@ -59,6 +59,15 @@ def lake_version() -> str:
 def lake_supports_add() -> bool:
     """Return True if `lake add` is supported (Lean >= 4.5+ toolchains)."""
     ensure_lake_installed()
+    help_proc = _run_command(["lake", "--help"])
+    help_text = (help_proc.stdout or "") + (help_proc.stderr or "")
+    if " add " not in help_text.lower() and "\nadd " not in help_text.lower():
+        return False
     proc = _run_command(["lake", "add", "--help"])
-    return proc.returncode == 0
+    text = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        return False
+    if "unknown command" in text.lower():
+        return False
+    return True
 

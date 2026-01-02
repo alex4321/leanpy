@@ -74,6 +74,7 @@ class LeanProject:
     # --- internal helpers ---
     def _init_or_reuse(self) -> None:
         """Initialize project if needed or verify an existing Lake project."""
+        run_log: list[tuple[list[str], str, str, int]] = []
         if self.path.exists():
             if self._is_lake_project():
                 return
@@ -82,20 +83,38 @@ class LeanProject:
                     f"Directory {self.path} exists but is not a Lake project and not empty."
                 )
             # Empty dir: `lake new` would fail if dir exists, so fall back to `lake init`.
-            self._run(["lake", "init"], cwd=self.path)
+            proc = self._run(["lake", "init"], cwd=self.path)
+            run_log.append((["lake", "init"], proc.stdout, proc.stderr, proc.returncode))
         else:
             # Create parent dirs then run `lake new` in parent.
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._run(["lake", "new", self.name], cwd=self.path.parent)
+            proc = self._run(["lake", "new", self.name], cwd=self.path.parent)
+            run_log.append((["lake", "new", self.name], proc.stdout, proc.stderr, proc.returncode))
 
         if not self._is_lake_project():
+            try:
+                contents = sorted(p.name for p in self.path.iterdir())
+                contents_str = ", ".join(contents) if contents else "(empty)"
+            except Exception:
+                contents_str = "(unreadable)"
+
+            cmd_section = ""
+            if run_log:
+                cmd_lines = []
+                for args, stdout, stderr, rc in run_log:
+                    cmd_lines.append(
+                        f"{' '.join(args)} (exit {rc})\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                    )
+                cmd_section = "\nCommands run:\n" + "\n---\n".join(cmd_lines)
+
             raise ProjectInitError(
-                f"Expected Lake files not found in {self.path}. Initialization may have failed."
+                f"Expected Lake files not found in {self.path}. Initialization may have failed. "
+                f"Directory contents: {contents_str}.{cmd_section}"
             )
 
     def _is_lake_project(self) -> bool:
-        """Return True if lakefile.lean exists in the project root."""
-        return self.lakefile.exists()
+        """Return True if recognizable Lake project files exist."""
+        return self.lakefile.exists() or (self.path / "lakefile.toml").exists()
 
     def _run(self, args: list[str], *, cwd: Path) -> CompletedProcess[str]:
         """Run a command, raising ProjectInitError on failure."""
@@ -108,22 +127,26 @@ class LeanProject:
         return proc
 
     def _load_existing_dependencies(self) -> None:
-        """Populate dependencies from lake-manifest.json if present."""
+        """Populate dependencies from lake-manifest.json or lakefile.toml if present."""
         manifest = self.path / "lake-manifest.json"
-        if not manifest.exists():
-            return
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        packages = data.get("packages", [])
-        for pkg in packages:
-            pkg_name = pkg.get("name")
-            if not pkg_name or pkg_name == self.name:
-                continue
-            scope, name = self._extract_scope_and_name(pkg)
-            dep = LeanDependencyConfig(scope=scope, name=name)
-            self._add_dependency_if_missing(dep)
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                packages = data.get("packages", [])
+                for pkg in packages:
+                    pkg_name = pkg.get("name")
+                    if not pkg_name or pkg_name == self.name:
+                        continue
+                    scope, name = self._extract_scope_and_name(pkg)
+                    dep = LeanDependencyConfig(scope=scope, name=name)
+                    self._add_dependency_if_missing(dep)
+            except Exception:
+                pass
+
+        lakefile_toml = self.path / "lakefile.toml"
+        if lakefile_toml.exists():
+            for dep in self._extract_from_toml(lakefile_toml):
+                self._add_dependency_if_missing(dep)
 
     def _extract_scope_and_name(self, pkg: dict) -> tuple[str, str]:
         """Best-effort extraction of scope/name from manifest package entry."""
@@ -137,6 +160,53 @@ class LeanProject:
         # Fallback: unknown scope, keep manifest name as repo.
         name = pkg.get("name", "unknown")
         return "unknown", name
+
+    def _extract_from_toml(self, lakefile: Path) -> list[LeanDependencyConfig]:
+        """Parse lakefile.toml dependencies section (minimal, non-validating)."""
+        text = lakefile.read_text(encoding="utf-8")
+        deps: list[LeanDependencyConfig] = []
+        current: str | None = None
+        git_url: str | None = None
+        version: str | None = None
+
+        def flush():
+            nonlocal current, git_url, version
+            if current:
+                scope, name = self._scope_name_from_git(git_url, current)
+                deps.append(LeanDependencyConfig(scope=scope, name=name, version=version))
+            current = None
+            git_url = None
+            version = None
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                flush()
+                continue
+            if stripped.startswith("[dependencies.") and stripped.endswith("]"):
+                flush()
+                current = stripped[len("[dependencies.") : -1]
+                continue
+            if "=" not in stripped:
+                continue
+            key, val = [part.strip() for part in stripped.split("=", 1)]
+            val = val.strip().strip('"')
+            if key == "git":
+                git_url = val
+            if key in {"rev", "branch", "tag"}:
+                version = val
+        flush()
+        return deps
+
+    def _scope_name_from_git(self, git_url: str | None, fallback_name: str) -> tuple[str, str]:
+        if git_url:
+            parsed = urlparse(git_url)
+            parts = [p for p in parsed.path.split("/") if p]
+            if len(parts) >= 2:
+                scope = parts[-2]
+                repo = parts[-1].removesuffix(".git")
+                return scope, repo
+        return "unknown", fallback_name
 
     def _add_dependency_if_missing(self, dep: LeanDependencyConfig) -> None:
         """Avoid duplicate dependency entries."""

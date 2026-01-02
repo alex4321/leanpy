@@ -31,16 +31,20 @@ def install_dependency(project_path: Path, dep: LeanDependencyConfig) -> None:
     """
     Install a dependency into the project using Lake.
 
-    Prefers `lake add` if supported; otherwise raises DependencyError.
-    Runs `lake update` afterwards. If `dep.cache` is True, attempts to
-    prefetch cached artifacts via `lake exe cache get` (best-effort).
+    Prefer editing lakefile.toml (Lake 5) when present; otherwise, fall back to
+    `lake add` if supported. Runs `lake update` afterwards. If `dep.cache` is
+    True, attempts to prefetch cached artifacts via `lake exe cache get`
+    (best-effort).
     """
-    if lake_supports_add():
+    lakefile_toml = project_path / "lakefile.toml"
+    if lakefile_toml.exists():
+        _write_dependency_toml(lakefile_toml, dep)
+    elif lake_supports_add():
         _run(["lake", "add", dep.identifier], cwd=project_path)
     else:
         raise DependencyError(
-            "`lake add` not supported by this Lake version. "
-            "Please add the dependency manually to lakefile.lean."
+            "Cannot install dependency: `lakefile.toml` not found and `lake add` "
+            "is not supported by this Lake version."
         )
 
     _run(["lake", "update"], cwd=project_path)
@@ -65,4 +69,24 @@ def _run(args: list[str], *, cwd: Path) -> CompletedProcess[str]:
             f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
         )
     return proc
+
+
+def _write_dependency_toml(lakefile: Path, dep: LeanDependencyConfig) -> None:
+    """Append dependency entry to lakefile.toml if not already present."""
+    text = lakefile.read_text(encoding="utf-8")
+    marker = f"[dependencies.{dep.name}]"
+    if marker in text:
+        return
+
+    lines = []
+    if not text.endswith("\n"):
+        lines.append("\n")
+    lines.append(marker)
+    git_url = f"https://github.com/{dep.scope}/{dep.name}.git"
+    lines.append(f'git = "{git_url}"')
+    if dep.version:
+        lines.append(f'branch = "{dep.version}"')
+    lines.append("")  # trailing newline
+
+    lakefile.write_text(text + "\n".join(lines), encoding="utf-8")
 
