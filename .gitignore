@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# VSCode and PyCharm settings
+.vscode/
+.idea/
+
+# macOS system files
+.DS_Store
+
+# Python dotenv files
+.env
+.env.*
+
+# Lake/Lean build artifacts (if applicable)
+lake-packages/
+lake-manifest.json
+
+# Test cache
+.pytest_cache/
+.nox/
+.tox/
+.coverage
+htmlcov/
+*.cover
+
+# Misc
+*.log
+
