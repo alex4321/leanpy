@@ -4,9 +4,10 @@ import json
 import os
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urlparse
 
 from .deps import LeanDependencyConfig, install_dependency
@@ -163,51 +164,39 @@ class LeanProject:
 
     def _extract_from_toml(self, lakefile: Path) -> list[LeanDependencyConfig]:
         """Parse lakefile.toml dependencies (old [dependencies.*] and [[require]])."""
-        text = lakefile.read_text(encoding="utf-8")
+        try:
+            toml_data: dict[str, Any] = tomllib.loads(lakefile.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ProjectInitError(f"Invalid TOML in {lakefile}: {exc}") from exc
+
         deps: list[LeanDependencyConfig] = []
-        current_dep: dict[str, str] | None = None
-        mode_require = False
 
-        def flush():
-            nonlocal current_dep, mode_require
-            if not current_dep:
-                return
-            name = current_dep.get("name")
-            scope = current_dep.get("scope", "unknown")
-            version = current_dep.get("rev") or current_dep.get("branch") or current_dep.get("tag")
-            git_url = current_dep.get("git")
-            if git_url and scope == "unknown":
-                scope, name_from_git = self._scope_name_from_git(git_url, name or "")
-                if name_from_git:
-                    name = name_from_git
-            if name:
+        require_entries = toml_data.get("require", [])
+        if isinstance(require_entries, dict):
+            require_entries = [require_entries]
+        for entry in require_entries:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not name:
+                continue
+            scope = entry.get("scope", "unknown")
+            version = entry.get("rev") or entry.get("branch") or entry.get("tag")
+            deps.append(LeanDependencyConfig(scope=scope, name=name, version=version))
+
+        dependencies_table = toml_data.get("dependencies") or {}
+        if isinstance(dependencies_table, dict):
+            for name, cfg in dependencies_table.items():
+                if not isinstance(cfg, dict):
+                    continue
+                scope = cfg.get("scope", "unknown")
+                version = cfg.get("rev") or cfg.get("branch") or cfg.get("tag")
+                git_url = cfg.get("git")
+                if git_url and scope == "unknown":
+                    scope, name_from_git = self._scope_name_from_git(git_url, name)
+                    name = name_from_git or name
                 deps.append(LeanDependencyConfig(scope=scope, name=name, version=version))
-            current_dep = None
-            mode_require = False
 
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                flush()
-                continue
-            if stripped.startswith("[[require]]"):
-                flush()
-                mode_require = True
-                current_dep = {}
-                continue
-            if stripped.startswith("[dependencies.") and stripped.endswith("]"):
-                flush()
-                mode_require = False
-                name = stripped[len("[dependencies.") : -1]
-                current_dep = {"name": name}
-                continue
-            if "=" not in stripped or current_dep is None:
-                continue
-            key, val = [part.strip() for part in stripped.split("=", 1)]
-            val = val.strip().strip('"')
-            current_dep[key] = val
-
-        flush()
         return deps
 
     def _scope_name_from_git(self, git_url: str | None, fallback_name: str) -> tuple[str, str]:

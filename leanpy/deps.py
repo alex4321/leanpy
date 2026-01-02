@@ -4,6 +4,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import CompletedProcess
+from typing import Any
+import tomllib
 
 from .errors import DependencyError
 
@@ -75,15 +77,24 @@ def _run(args: list[str], *, cwd: Path) -> CompletedProcess[str]:
 
 
 def _write_dependency_toml(lakefile: Path, dep: LeanDependencyConfig) -> None:
-    """Append `[[require]]` dependency entry to lakefile.toml if not already present."""
+    """
+    Append `[[require]]` dependency entry to lakefile.toml if not already present.
+
+    Uses tomllib for reliable parsing to detect existing entries instead of
+    relying on string search.
+    """
     text = lakefile.read_text(encoding="utf-8")
-    marker = f'name = "{dep.name}"'
-    if marker in text:
+    try:
+        toml_data = tomllib.loads(text) if text.strip() else {}
+    except tomllib.TOMLDecodeError as exc:
+        raise DependencyError(f"Invalid TOML in {lakefile}: {exc}") from exc
+
+    if _dependency_exists(toml_data, dep):
         return
 
     lines = []
-    if not text.endswith("\n"):
-        lines.append("\n")
+    if text and not text.endswith("\n"):
+        lines.append("")
     lines.append("[[require]]")
     lines.append(f'name = "{dep.name}"')
     lines.append(f'scope = "{dep.scope}"')
@@ -92,4 +103,33 @@ def _write_dependency_toml(lakefile: Path, dep: LeanDependencyConfig) -> None:
     lines.append("")  # trailing newline
 
     lakefile.write_text(text + "\n".join(lines), encoding="utf-8")
+
+
+def _dependency_exists(toml_data: dict[str, Any], dep: LeanDependencyConfig) -> bool:
+    """Return True if dependency already declared in [[require]] or [dependencies.*]."""
+    require_entries = toml_data.get("require", [])
+    if isinstance(require_entries, dict):
+        require_entries = [require_entries]
+    for entry in require_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") == dep.name and entry.get("scope") == dep.scope:
+            version = entry.get("rev") or entry.get("branch") or entry.get("tag")
+            if dep.version is None or dep.version == version:
+                return True
+
+    dependencies_table = toml_data.get("dependencies") or {}
+    if isinstance(dependencies_table, dict):
+        existing_dep = dependencies_table.get(dep.name)
+        if isinstance(existing_dep, dict):
+            version = (
+                existing_dep.get("rev")
+                or existing_dep.get("branch")
+                or existing_dep.get("tag")
+            )
+            scope = existing_dep.get("scope", "unknown")
+            if scope == dep.scope and (dep.version is None or dep.version == version):
+                return True
+
+    return False
 
