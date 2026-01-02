@@ -1,8 +1,9 @@
 import hashlib
+import subprocess
 
 import pytest
 
-from leanpy import LeanProject
+from leanpy import LeanProject, LeanDependencyConfig
 from leanpy.errors import ExecutionError
 from leanpy.runner import RunResult
 
@@ -45,6 +46,34 @@ def test_run_code_failure(tmp_path):
         msg = str(excinfo.value)
         assert "Lean exited" in msg
         assert "nope" in msg
+    finally:
+        project.remove()
+
+
+def test_run_code_with_installed_dependency(tmp_path):
+    """
+    Create a project, install mathlib via lakefile.toml, and execute a snippet
+    that imports and uses Mathlib.
+    """
+    project = LeanProject(tmp_path / "proj_dep_run")
+    try:
+        dep = LeanDependencyConfig(scope="leanprover-community", name="mathlib", cache=False)
+        project.install_dependency(dep)
+
+        build_proc = subprocess.run(
+            ["lake", "build"],
+            cwd=project.path,
+            capture_output=True,
+            text=True,
+        )
+        assert build_proc.returncode == 0, f"lake build failed: {build_proc.stderr}"
+
+        imports = ["Mathlib"]
+        code = "#eval (Nat.succ 1)"
+        result = project.run(imports=imports, code=code, timeout=120)
+
+        assert result.returncode == 0
+        assert "2" in result.stdout
     finally:
         project.remove()
 

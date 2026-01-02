@@ -9,13 +9,13 @@ Usage example:
     result = project.run(imports=["Mathlib"], code="def hello : String := \"hello\"")
 """
 
-from _pytest._code.code import TracebackStyle
 from .deps import LeanDependencyConfig
+from .env import ensure_lake_installed, ensure_lean_installed, lake_supports_add
 from .project import LeanProject
 from .runner import RunResult
-from .env import ensure_lean_installed, ensure_lake_installed, lake_supports_add
 
 __all__ = ["LeanProject", "LeanDependencyConfig", "RunResult"]
+
+# Proactively verify required binaries on import for early feedback.
 ensure_lean_installed()
 ensure_lake_installed()
-lake_supports_add()

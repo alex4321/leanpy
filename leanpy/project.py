@@ -162,39 +162,51 @@ class LeanProject:
         return "unknown", name
 
     def _extract_from_toml(self, lakefile: Path) -> list[LeanDependencyConfig]:
-        """Parse lakefile.toml dependencies section (minimal, non-validating)."""
+        """Parse lakefile.toml dependencies (old [dependencies.*] and [[require]])."""
         text = lakefile.read_text(encoding="utf-8")
         deps: list[LeanDependencyConfig] = []
-        current: str | None = None
-        git_url: str | None = None
-        version: str | None = None
+        current_dep: dict[str, str] | None = None
+        mode_require = False
 
         def flush():
-            nonlocal current, git_url, version
-            if current:
-                scope, name = self._scope_name_from_git(git_url, current)
+            nonlocal current_dep, mode_require
+            if not current_dep:
+                return
+            name = current_dep.get("name")
+            scope = current_dep.get("scope", "unknown")
+            version = current_dep.get("rev") or current_dep.get("branch") or current_dep.get("tag")
+            git_url = current_dep.get("git")
+            if git_url and scope == "unknown":
+                scope, name_from_git = self._scope_name_from_git(git_url, name or "")
+                if name_from_git:
+                    name = name_from_git
+            if name:
                 deps.append(LeanDependencyConfig(scope=scope, name=name, version=version))
-            current = None
-            git_url = None
-            version = None
+            current_dep = None
+            mode_require = False
 
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped:
                 flush()
                 continue
+            if stripped.startswith("[[require]]"):
+                flush()
+                mode_require = True
+                current_dep = {}
+                continue
             if stripped.startswith("[dependencies.") and stripped.endswith("]"):
                 flush()
-                current = stripped[len("[dependencies.") : -1]
+                mode_require = False
+                name = stripped[len("[dependencies.") : -1]
+                current_dep = {"name": name}
                 continue
-            if "=" not in stripped:
+            if "=" not in stripped or current_dep is None:
                 continue
             key, val = [part.strip() for part in stripped.split("=", 1)]
             val = val.strip().strip('"')
-            if key == "git":
-                git_url = val
-            if key in {"rev", "branch", "tag"}:
-                version = val
+            current_dep[key] = val
+
         flush()
         return deps
 

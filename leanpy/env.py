@@ -63,11 +63,5 @@ def lake_supports_add() -> bool:
     help_text = (help_proc.stdout or "") + (help_proc.stderr or "")
     if " add " not in help_text.lower() and "\nadd " not in help_text.lower():
         return False
-    proc = _run_command(["lake", "add", "--help"])
-    text = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        return False
-    if "unknown command" in text.lower():
-        return False
     return True
 

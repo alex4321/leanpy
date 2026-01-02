@@ -12,7 +12,7 @@ def test_dependency_identifier_format():
     assert dep2.identifier == "org/pkg@1.2.3"
 
 
-def test_install_dependency_real(monkeypatch, tmp_path):
+def test_install_dependency_real(tmp_path):
     """
     Integration test: install a dependency in a real Lake project.
     Supports both Lake 4 (lake add) and Lake 5 (lakefile.toml edit + update).

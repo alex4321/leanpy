@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from .env import lake_supports_add
 from .errors import DependencyError
 
 
@@ -31,23 +30,27 @@ def install_dependency(project_path: Path, dep: LeanDependencyConfig) -> None:
     """
     Install a dependency into the project using Lake.
 
-    Prefer editing lakefile.toml (Lake 5) when present; otherwise, fall back to
-    `lake add` if supported. Runs `lake update` afterwards. If `dep.cache` is
-    True, attempts to prefetch cached artifacts via `lake exe cache get`
-    (best-effort).
+    Writes a `[[require]]` entry to lakefile.toml (creating the file if missing),
+    then runs `lake update`. If `dep.cache` is True, attempts to prefetch cached
+    artifacts via `lake exe cache get` (best-effort).
     """
     lakefile_toml = project_path / "lakefile.toml"
-    if lakefile_toml.exists():
-        _write_dependency_toml(lakefile_toml, dep)
-    elif lake_supports_add():
-        _run(["lake", "add", dep.identifier], cwd=project_path)
-    else:
-        raise DependencyError(
-            "Cannot install dependency: `lakefile.toml` not found and `lake add` "
-            "is not supported by this Lake version."
-        )
+    if not lakefile_toml.exists():
+        lakefile_toml.write_text("[package]\n", encoding="utf-8")
 
-    _run(["lake", "update"], cwd=project_path)
+    _write_dependency_toml(lakefile_toml, dep)
+
+    def update_with_fallback() -> None:
+        try:
+            _run(["lake", "update", "--reconfigure"], cwd=project_path)
+        except DependencyError as exc:
+            msg = str(exc)
+            if "--reconfigure" in msg or "unknown option" in msg or "unrecognized option" in msg:
+                _run(["lake", "update"], cwd=project_path)
+            else:
+                raise
+
+    update_with_fallback()
 
     if dep.cache:
         # Attempt to prefetch cache; ignore failures.
@@ -72,20 +75,20 @@ def _run(args: list[str], *, cwd: Path) -> CompletedProcess[str]:
 
 
 def _write_dependency_toml(lakefile: Path, dep: LeanDependencyConfig) -> None:
-    """Append dependency entry to lakefile.toml if not already present."""
+    """Append `[[require]]` dependency entry to lakefile.toml if not already present."""
     text = lakefile.read_text(encoding="utf-8")
-    marker = f"[dependencies.{dep.name}]"
+    marker = f'name = "{dep.name}"'
     if marker in text:
         return
 
     lines = []
     if not text.endswith("\n"):
         lines.append("\n")
-    lines.append(marker)
-    git_url = f"https://github.com/{dep.scope}/{dep.name}.git"
-    lines.append(f'git = "{git_url}"')
+    lines.append("[[require]]")
+    lines.append(f'name = "{dep.name}"')
+    lines.append(f'scope = "{dep.scope}"')
     if dep.version:
-        lines.append(f'branch = "{dep.version}"')
+        lines.append(f'rev = "{dep.version}"')
     lines.append("")  # trailing newline
 
     lakefile.write_text(text + "\n".join(lines), encoding="utf-8")
