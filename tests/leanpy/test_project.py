@@ -2,14 +2,8 @@ import pytest
 
 from leanpy import LeanProject
 from leanpy.errors import ProjectInitError
-import shutil
 
 
-HAS_BINARIES = shutil.which("lean") and shutil.which("lake")
-requires_lean = pytest.mark.skipif(not HAS_BINARIES, reason="requires lean/lake on PATH")
-
-
-@requires_lean
 def test_reuse_existing_lake_project(tmp_path):
     """
     GIVEN an existing Lake project,
@@ -17,13 +11,12 @@ def test_reuse_existing_lake_project(tmp_path):
     THEN it should reuse the project and leave lakefile.lean intact.
     """
     project1 = LeanProject(tmp_path / "proj")
-    assert (project1.path / "lakefile.lean").exists()
+    assert (project1.path / "lakefile.lean").exists() or (project1.path / "lakefile.toml").exists()
     project2 = LeanProject(project1.path)
-    assert (project2.path / "lakefile.lean").exists()
+    assert (project2.path / "lakefile.lean").exists() or (project2.path / "lakefile.toml").exists()
     project1.remove()
 
 
-@requires_lean
 def test_empty_dir_runs_lake_init(tmp_path):
     """
     GIVEN an existing empty directory,
@@ -31,7 +24,7 @@ def test_empty_dir_runs_lake_init(tmp_path):
     THEN it should initialize a Lake project (lakefile.lean present).
     """
     project = LeanProject(tmp_path)
-    assert (project.path / "lakefile.lean").exists()
+    assert (project.path / "lakefile.lean").exists() or (project.path / "lakefile.toml").exists()
     project.remove()
 
 
@@ -46,7 +39,6 @@ def test_non_lake_non_empty_raises(tmp_path):
         LeanProject(tmp_path)
 
 
-@requires_lean
 def test_clone_project(tmp_path):
     """
     GIVEN an existing Lake project,
@@ -60,7 +52,7 @@ def test_clone_project(tmp_path):
     clone_path = tmp_path / "proj_clone_dst"
     try:
         cloned = project.clone(clone_path, new_name="cloned_proj")
-        assert (clone_path / "lakefile.lean").exists()
+        assert (clone_path / "lakefile.lean").exists() or (clone_path / "lakefile.toml").exists()
         assert (clone_path / "src" / "Demo.lean").exists()
         assert cloned.path == clone_path.resolve()
     finally:

@@ -1,5 +1,4 @@
 import hashlib
-import shutil
 
 import pytest
 
@@ -8,11 +7,6 @@ from leanpy.errors import ExecutionError
 from leanpy.runner import RunResult
 
 
-HAS_BINARIES = shutil.which("lean") and shutil.which("lake")
-requires_lean = pytest.mark.skipif(not HAS_BINARIES, reason="requires lean/lake on PATH")
-
-
-@requires_lean
 def test_run_code_success(tmp_path):
     """
     GIVEN a real Lake project and valid Lean snippet,
@@ -38,7 +32,6 @@ def test_run_code_success(tmp_path):
         project.remove()
 
 
-@requires_lean
 def test_run_code_failure(tmp_path):
     """
     GIVEN a real Lake project and broken Lean snippet,
