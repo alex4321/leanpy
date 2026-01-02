@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from .deps import LeanDependencyConfig, install_dependency
 from .env import ensure_lake_installed, ensure_lean_installed, lake_version, lean_version
@@ -30,6 +33,7 @@ class LeanProject:
         self.name = name or self.path.name
         self.dependencies: list[LeanDependencyConfig] = []
         self._init_or_reuse()
+        self._load_existing_dependencies()
 
     @property
     def lakefile(self) -> Path:
@@ -47,6 +51,25 @@ class LeanProject:
     def versions(self) -> dict[str, str]:
         """Return detected Lean and Lake versions."""
         return {"lean": lean_version(), "lake": lake_version()}
+
+    def remove(self) -> None:
+        """Delete the project directory recursively (best-effort)."""
+        shutil.rmtree(self.path, ignore_errors=True)
+
+    def clone(self, new_dir: os.PathLike | str, new_name: Optional[str] = None) -> "LeanProject":
+        """
+        Copy the current project to `new_dir` and initialize a LeanProject there.
+
+        Files are copied as-is; `new_name` overrides the inferred project name.
+        """
+        dest = Path(new_dir).expanduser().resolve()
+        if dest.exists():
+            raise ProjectInitError(f"Destination {dest} already exists; cannot clone.")
+        try:
+            shutil.copytree(self.path, dest)
+        except Exception as exc:
+            raise ProjectInitError(f"Failed to clone project to {dest}: {exc}") from exc
+        return LeanProject(dest, name=new_name or dest.name)
 
     # --- internal helpers ---
     def _init_or_reuse(self) -> None:
@@ -83,4 +106,46 @@ class LeanProject:
                 f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
             )
         return proc
+
+    def _load_existing_dependencies(self) -> None:
+        """Populate dependencies from lake-manifest.json if present."""
+        manifest = self.path / "lake-manifest.json"
+        if not manifest.exists():
+            return
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        packages = data.get("packages", [])
+        for pkg in packages:
+            pkg_name = pkg.get("name")
+            if not pkg_name or pkg_name == self.name:
+                continue
+            scope, name = self._extract_scope_and_name(pkg)
+            dep = LeanDependencyConfig(scope=scope, name=name)
+            self._add_dependency_if_missing(dep)
+
+    def _extract_scope_and_name(self, pkg: dict) -> tuple[str, str]:
+        """Best-effort extraction of scope/name from manifest package entry."""
+        url = pkg.get("url") or pkg.get("git") or pkg.get("gitUrl") or ""
+        parsed = urlparse(url)
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if len(path_parts) >= 2:
+            scope = path_parts[-2]
+            repo = path_parts[-1].removesuffix(".git")
+            return scope, repo
+        # Fallback: unknown scope, keep manifest name as repo.
+        name = pkg.get("name", "unknown")
+        return "unknown", name
+
+    def _add_dependency_if_missing(self, dep: LeanDependencyConfig) -> None:
+        """Avoid duplicate dependency entries."""
+        for existing in self.dependencies:
+            if (
+                existing.scope == dep.scope
+                and existing.name == dep.name
+                and existing.version == dep.version
+            ):
+                return
+        self.dependencies.append(dep)
 
