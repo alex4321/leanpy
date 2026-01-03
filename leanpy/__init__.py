@@ -10,7 +10,7 @@ Usage example:
 """
 
 from .deps import LeanDependencyConfig
-from .env import ensure_lake_installed, ensure_lean_installed, lake_supports_add
+from .env import ensure_lake_installed, ensure_lean_installed
 from .project import LeanProject
 from .runner import RunResult
 
