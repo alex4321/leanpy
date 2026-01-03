@@ -7,13 +7,16 @@ import subprocess
 import tomllib
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from .deps import LeanDependencyConfig, install_dependency
 from .env import ensure_lake_installed, ensure_lean_installed, lake_version, lean_version
 from .errors import ProjectInitError
 from .runner import RunResult, run_code
+
+# Command, stdout, stderr, returncode
+RunLogEntry = Tuple[list[str], str, str, int]
 
 
 class LeanProject:
@@ -32,7 +35,7 @@ class LeanProject:
         ensure_lean_installed()
         ensure_lake_installed()
         self.name = name or self.path.name
-        self.dependencies: list[LeanDependencyConfig] = []
+        self.dependencies: set[LeanDependencyConfig] = set()
         self._init_or_reuse()
         self._load_existing_dependencies()
 
@@ -43,7 +46,7 @@ class LeanProject:
     def install_dependency(self, dep: LeanDependencyConfig) -> None:
         """Install a dependency via Lake and record it locally."""
         install_dependency(self.path, dep)
-        self.dependencies.append(dep)
+        self.dependencies.add(dep)
 
     def run(self, *, imports: List[str], code: str, timeout: int = 30) -> RunResult:
         """Run Lean code with optional imports inside this project."""
@@ -75,7 +78,7 @@ class LeanProject:
     # --- internal helpers ---
     def _init_or_reuse(self) -> None:
         """Initialize project if needed or verify an existing Lake project."""
-        run_log: list[tuple[list[str], str, str, int]] = []
+        run_log: list[RunLogEntry] = []
         if self.path.exists():
             if self._is_lake_project():
                 return
@@ -83,31 +86,13 @@ class LeanProject:
                 raise ProjectInitError(
                     f"Directory {self.path} exists but is not a Lake project and not empty."
                 )
-            # Empty dir: `lake new` would fail if dir exists, so fall back to `lake init`.
-            proc = self._run(["lake", "init"], cwd=self.path)
-            run_log.append((["lake", "init"], proc.stdout, proc.stderr, proc.returncode))
+            run_log.append(self._init_empty_dir())
         else:
-            # Create parent dirs then run `lake new` in parent.
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            proc = self._run(["lake", "new", self.name], cwd=self.path.parent)
-            run_log.append((["lake", "new", self.name], proc.stdout, proc.stderr, proc.returncode))
+            run_log.append(self._create_from_parent())
 
         if not self._is_lake_project():
-            try:
-                contents = sorted(p.name for p in self.path.iterdir())
-                contents_str = ", ".join(contents) if contents else "(empty)"
-            except Exception:
-                contents_str = "(unreadable)"
-
-            cmd_section = ""
-            if run_log:
-                cmd_lines = []
-                for args, stdout, stderr, rc in run_log:
-                    cmd_lines.append(
-                        f"{' '.join(args)} (exit {rc})\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                    )
-                cmd_section = "\nCommands run:\n" + "\n---\n".join(cmd_lines)
-
+            contents_str = self._describe_dir_contents()
+            cmd_section = self._format_run_log(run_log)
             raise ProjectInitError(
                 f"Expected Lake files not found in {self.path}. Initialization may have failed. "
                 f"Directory contents: {contents_str}.{cmd_section}"
@@ -127,6 +112,34 @@ class LeanProject:
             )
         return proc
 
+    def _init_empty_dir(self) -> RunLogEntry:
+        """Initialize an empty directory with `lake init`."""
+        proc = self._run(["lake", "init"], cwd=self.path)
+        return (["lake", "init"], proc.stdout, proc.stderr, proc.returncode)
+
+    def _create_from_parent(self) -> RunLogEntry:
+        """Create project directory parents and run `lake new <name>` in the parent."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        proc = self._run(["lake", "new", self.name], cwd=self.path.parent)
+        return (["lake", "new", self.name], proc.stdout, proc.stderr, proc.returncode)
+
+    def _describe_dir_contents(self) -> str:
+        """Return a human-friendly description of directory contents."""
+        try:
+            contents = sorted(p.name for p in self.path.iterdir())
+            return ", ".join(contents) if contents else "(empty)"
+        except Exception:
+            return "(unreadable)"
+
+    def _format_run_log(self, run_log: list[RunLogEntry]) -> str:
+        """Format run log for error messages."""
+        if not run_log:
+            return ""
+        cmd_lines = []
+        for args, stdout, stderr, rc in run_log:
+            cmd_lines.append(f"{' '.join(args)} (exit {rc})\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        return "\nCommands run:\n" + "\n---\n".join(cmd_lines)
+
     def _load_existing_dependencies(self) -> None:
         """Populate dependencies from lake-manifest.json or lakefile.toml if present."""
         manifest = self.path / "lake-manifest.json"
@@ -140,14 +153,16 @@ class LeanProject:
                         continue
                     scope, name = self._extract_scope_and_name(pkg)
                     dep = LeanDependencyConfig(scope=scope, name=name)
-                    self._add_dependency_if_missing(dep)
-            except Exception:
-                pass
+                    self.dependencies.add(dep)
+            except Exception as exc:
+                raise ProjectInitError(
+                    f"Failed to load dependencies from {manifest}: {exc}"
+                ) from exc
 
         lakefile_toml = self.path / "lakefile.toml"
         if lakefile_toml.exists():
             for dep in self._extract_from_toml(lakefile_toml):
-                self._add_dependency_if_missing(dep)
+                self.dependencies.add(dep)
 
     def _extract_scope_and_name(self, pkg: dict) -> tuple[str, str]:
         """Best-effort extraction of scope/name from manifest package entry."""
@@ -209,14 +224,4 @@ class LeanProject:
                 return scope, repo
         return "unknown", fallback_name
 
-    def _add_dependency_if_missing(self, dep: LeanDependencyConfig) -> None:
-        """Avoid duplicate dependency entries."""
-        for existing in self.dependencies:
-            if (
-                existing.scope == dep.scope
-                and existing.name == dep.name
-                and existing.version == dep.version
-            ):
-                return
-        self.dependencies.append(dep)
 

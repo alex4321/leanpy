@@ -10,7 +10,7 @@ import tomllib
 from .errors import DependencyError
 
 
-@dataclass
+@dataclass(frozen=True)
 class LeanDependencyConfig:
     """Configuration for a Lake dependency."""
 
