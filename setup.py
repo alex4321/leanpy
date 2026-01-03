@@ -13,13 +13,11 @@ setup(
     long_description=README,
     long_description_content_type="text/markdown",
     author="leanpy maintainers",
-    url="https://github.com/",
     packages=find_packages(exclude=("tests", "tests.*")),
     python_requires=">=3.11",
     include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
 )
