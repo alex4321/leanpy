@@ -32,17 +32,8 @@ def run_code(project_path: Path, *, imports: List[str], code: str, timeout: int 
     tmp_dir = project_path / ".leanpy"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    digest = hashlib.sha1(
-        ("\n".join(imports) + "\n" + code).encode("utf-8"), usedforsecurity=False
-    ).hexdigest()[:12]
-    file_path = tmp_dir / f"run_{digest}.lean"
-
-    with file_path.open("w", encoding="utf-8") as f:
-        for imp in imports:
-            f.write(f"import {imp}\n")
-        f.write("\n")
-        f.write(code.strip())
-        f.write("\n")
+    file_path = _run_file_path(tmp_dir, imports, code)
+    _write_run_file(file_path, imports, code)
 
     try:
         proc = subprocess.run(
@@ -65,5 +56,30 @@ def run_code(project_path: Path, *, imports: List[str], code: str, timeout: int 
         stdout=proc.stdout,
         stderr=proc.stderr,
         returncode=proc.returncode,
+    )
+
+
+def _run_file_path(tmp_dir: Path, imports: List[str], code: str) -> Path:
+    """Return the deterministic temp file path for a run."""
+    digest = _content_digest(imports, code)
+    return tmp_dir / f"run_{digest}.lean"
+
+
+def _write_run_file(file_path: Path, imports: List[str], code: str) -> None:
+    """Write the temp Lean file with imports followed by code."""
+    with file_path.open("w", encoding="utf-8") as f:
+        for imp in imports:
+            f.write(f"import {imp}\n")
+        f.write("\n")
+        f.write(code.strip())
+        f.write("\n")
+
+
+def _content_digest(imports: List[str], code: str) -> str:
+    """Return a short hash of the imports+code content."""
+    return (
+        hashlib.sha1(
+            ("\n".join(imports) + "\n" + code).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
     )
 
